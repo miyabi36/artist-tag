@@ -781,10 +781,11 @@ elFile.onchange = (e) => {
 
 /* === auto-load from GitHub release ===
    버튼을 누르지 않아도 release 자산 NAID5F-29000-E 를 받아 바로 불러온다.
-   실패하면(네트워크/CORS 등) 기존 버튼으로 수동 선택할 수 있다. */
+   GitHub 릴리스 자산은 CORS를 지원하지 않아 브라우저에서 직접 fetch가 막히므로,
+   같은 파일을 그대로 중계하며 CORS 헤더만 붙여주는 Cloudflare Worker를 거친다.
+   실패하면(네트워크 등) 기존 버튼으로 수동 선택할 수 있다. */
 const RELEASE_ASSET_NAME = "NAID5F-29000-E";
-const RELEASE_ASSET_URL =
-  "https://github.com/miyabi36/artist-tag/releases/download/1.0/" + RELEASE_ASSET_NAME;
+const RELEASE_ASSET_URL = "https://artist-tag-proxy.b1ngsuk09.workers.dev/";
 
 async function fetchReleaseAsset(url, name, onProgress) {
   const res = await fetch(url);
