@@ -659,7 +659,8 @@ function applySort() {
 }
 /* === state === */
 const state = {
-  file: null,                // File handle (for slicing)
+  file: null,                // File handle (for slicing) - local mode
+  remoteUrl: null,           // range-fetch base URL - remote(release) mode
   index: new Map(),          // name -> [valStartByte, valEndByteExclusive]
   artistList: [],            // all keys, sorted by post count desc
   filtered: [],              // current search result (== artistList when no query)
@@ -779,43 +780,41 @@ elFile.onchange = (e) => {
   elFile.value = "";
 };
 
-/* === auto-load from GitHub release ===
-   버튼을 누르지 않아도 release 자산 NAID5F-29000-E 를 받아 바로 불러온다.
-   GitHub 릴리스 자산은 CORS를 지원하지 않아 브라우저에서 직접 fetch가 막히므로,
-   같은 파일을 그대로 중계하며 CORS 헤더만 붙여주는 Cloudflare Worker를 거친다.
-   실패하면(네트워크 등) 기존 버튼으로 수동 선택할 수 있다. */
+/* === auto-load from GitHub release (no full download) ===
+   1.76GB 팩 파일 전체를 내려받는 대신, 미리 만들어 둔 작은 offsets.json
+   (artist -> [byte start, byte end])만 받아 목록을 채운다. 썸네일은 화면에
+   보일 때마다 그 바이트 범위만 HTTP Range 요청으로 가져온다(즉시 로딩 + 트래픽 절약).
+   GitHub 릴리스 자산은 CORS를 지원하지 않으므로, Range 요청은 같은 파일을
+   그대로 중계하며 CORS 헤더만 붙여주는 Cloudflare Worker를 거친다.
+   실패하면(네트워크 등) 기존 버튼으로 로컬 파일을 수동 선택할 수 있다. */
 const RELEASE_ASSET_NAME = "NAID5F-29000-E";
 const RELEASE_ASSET_URL = "https://artist-tag-proxy.b1ngsuk09.workers.dev/";
+const OFFSETS_URL = "offsets.json";
 
-async function fetchReleaseAsset(url, name, onProgress) {
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-  const total = Number(res.headers.get("content-length")) || 0;
-  const reader = res.body.getReader();
-  const chunks = [];
-  let received = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    onProgress(received, total);
-  }
-  return new File(chunks, name);
-}
-
-async function loadFromRelease() {
-  setStatus(`release에서 ${RELEASE_ASSET_NAME} 받는 중…`);
-  elGrid.innerHTML = `<div class="grid-empty">release에서 파일을 받는 중…</div>`;
+async function loadRemoteIndex() {
+  setStatus(`release 인덱스 불러오는 중…`);
+  elGrid.innerHTML = `<div class="grid-empty">인덱스를 불러오는 중…</div>`;
   try {
-    const file = await fetchReleaseAsset(RELEASE_ASSET_URL, RELEASE_ASSET_NAME, (done, total) => {
-      const doneMB = (done / 1024 / 1024).toFixed(0);
-      const pct = total ? Math.floor((done / total) * 100) : null;
-      setStatus(pct != null
-        ? `release에서 받는 중: ${pct}% (${doneMB}/${(total / 1024 / 1024).toFixed(0)} MB)`
-        : `release에서 받는 중: ${doneMB} MB`);
-    });
-    await loadFile(file);
+    const res = await fetch(OFFSETS_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const obj = await res.json();
+
+    state.file = null;
+    state.remoteUrl = RELEASE_ASSET_URL;
+    state.index = new Map(Object.entries(obj));
+    state.filtered = [];
+    state.page = 1;
+    state.selected = null;
+    state.query = "";
+    elSearch.value = "";
+    showDetailEmpty();
+
+    const names = Array.from(state.index.keys()).filter((n) => !HIDDEN_ARTISTS.has(n));
+    state.artistList = sortNames(names);
+    state.filtered = state.artistList;
+    elThumbCnt.textContent = state.artistList.length.toLocaleString();
+    setStatus(`${RELEASE_ASSET_NAME} — ${state.artistList.length.toLocaleString()}명 (release에서 자동 로딩됨)`);
+    renderGrid();
   } catch (err) {
     console.error(err);
     setStatus(`오류: release 자동 불러오기 실패 — ${err.message} (버튼으로 직접 불러오세요)`);
@@ -825,12 +824,13 @@ async function loadFromRelease() {
     </div>`;
   }
 }
-loadFromRelease();
+loadRemoteIndex();
 
 async function loadFile(file) {
   const sizeMB = (file.size / 1024 / 1024).toFixed(1);
   setStatus(`인덱싱 중: ${file.name} (${sizeMB} MB)`);
   state.file = file;
+  state.remoteUrl = null;
   state.index = new Map();
   state.artistList = [];
   state.filtered = [];
@@ -990,9 +990,20 @@ window.addEventListener("drop", (e) => {
 /* === thumbnail fetch (per entry) === */
 async function fetchThumbB64(name) {
   const range = state.index.get(name);
-  if (!range || !state.file) return null;
-  const slice = state.file.slice(range[0], range[1]);
-  const text = await slice.text();
+  if (!range) return null;
+  let text;
+  if (state.file) {
+    const slice = state.file.slice(range[0], range[1]);
+    text = await slice.text();
+  } else if (state.remoteUrl) {
+    const res = await fetch(state.remoteUrl, {
+      headers: { Range: `bytes=${range[0]}-${range[1] - 1}` },
+    });
+    if (!res.ok) return null;
+    text = await res.text();
+  } else {
+    return null;
+  }
   const arr = JSON.parse(text);
   return Array.isArray(arr) ? arr[0] : arr;
 }
