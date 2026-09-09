@@ -528,7 +528,7 @@
   <div class="spacer"></div>
   <span class="badge">artists <b id="dict-count">0</b></span>
   <span class="badge">thumbs <b id="thumb-count">0</b></span>
-  <button id="btn-load">artist_thumb 파일 불러오기</button>
+  <button id="btn-load">파일 직접 불러오기</button>
   <input type="file" id="file-input" hidden>
 </header>
 
@@ -563,7 +563,8 @@
     </div>
     <div class="grid" id="grid">
       <div class="grid-empty">
-        오른쪽 상단 <b>artist_thumb 파일 불러오기</b> 버튼을 누르거나<br>
+        release에서 자동으로 불러오는 중입니다…<br>
+        실패하면 오른쪽 상단 <b>파일 직접 불러오기</b> 버튼을 누르거나<br>
         화면 어디든 팩 파일을 <b>드래그&drop</b> 하세요.<br>
         <span style="color:var(--muted)">확장자가 없어도 됩니다 (예: NAID5F-20000-Q)</span>
       </div>
@@ -777,6 +778,53 @@ elFile.onchange = (e) => {
   if (f) loadFile(f);
   elFile.value = "";
 };
+
+/* === auto-load from GitHub release ===
+   버튼을 누르지 않아도 release 자산 NAID5F-29000-E 를 받아 바로 불러온다.
+   실패하면(네트워크/CORS 등) 기존 버튼으로 수동 선택할 수 있다. */
+const RELEASE_ASSET_NAME = "NAID5F-29000-E";
+const RELEASE_ASSET_URL =
+  "https://github.com/miyabi36/artist-tag/releases/download/1.0/" + RELEASE_ASSET_NAME;
+
+async function fetchReleaseAsset(url, name, onProgress) {
+  const res = await fetch(url);
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  const total = Number(res.headers.get("content-length")) || 0;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    onProgress(received, total);
+  }
+  return new File(chunks, name);
+}
+
+async function loadFromRelease() {
+  setStatus(`release에서 ${RELEASE_ASSET_NAME} 받는 중…`);
+  elGrid.innerHTML = `<div class="grid-empty">release에서 파일을 받는 중…</div>`;
+  try {
+    const file = await fetchReleaseAsset(RELEASE_ASSET_URL, RELEASE_ASSET_NAME, (done, total) => {
+      const doneMB = (done / 1024 / 1024).toFixed(0);
+      const pct = total ? Math.floor((done / total) * 100) : null;
+      setStatus(pct != null
+        ? `release에서 받는 중: ${pct}% (${doneMB}/${(total / 1024 / 1024).toFixed(0)} MB)`
+        : `release에서 받는 중: ${doneMB} MB`);
+    });
+    await loadFile(file);
+  } catch (err) {
+    console.error(err);
+    setStatus(`오류: release 자동 불러오기 실패 — ${err.message} (버튼으로 직접 불러오세요)`);
+    elGrid.innerHTML = `<div class="grid-empty">
+      release에서 자동으로 불러오지 못했습니다.<br>
+      오른쪽 상단 <b>${elBtn.textContent}</b> 버튼을 눌러 직접 불러오세요.
+    </div>`;
+  }
+}
+loadFromRelease();
 
 async function loadFile(file) {
   const sizeMB = (file.size / 1024 / 1024).toFixed(1);
